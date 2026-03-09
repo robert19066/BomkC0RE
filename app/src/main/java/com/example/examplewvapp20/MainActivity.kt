@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
                     <html>
                     <body style="font-family:sans-serif;text-align:center;margin-top:40%">
                     <h2>SimpleWV ERROR</h2>
-                    <p>NO PRIME SHEBANG DETECTED</p>
+                    <p>NO PRIME SHEBANG DETECTED(code 001)</p>
                     <p>SimpleWV version - 2.0</p>
                     </body>
                     </html>
@@ -56,7 +56,7 @@ class MainActivity : ComponentActivity() {
                     <html>
                     <body style="font-family:sans-serif;text-align:center;margin-top:40%">
                     <h2>SimpleWV ERROR</h2>
-                    <p>DUBLICATE SHEBANGS</p>
+                    <p>DUBLICATE SHEBANGS(code 002)</p>
                     <p>SimpleWV version - 2.0</p>
                     </body>
                     </html>
