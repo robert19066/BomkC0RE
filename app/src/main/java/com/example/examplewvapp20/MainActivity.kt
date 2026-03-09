@@ -1,71 +1,131 @@
-package com.yoursite.app
+package com.example.examplewvapp20
 
 import android.content.Intent
 import android.content.res.AssetManager
 import android.net.Uri
 import android.os.Bundle
-import android.webkit.CookieManager
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import androidx.appcompat.app.AppCompatActivity
+import android.webkit.*
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.*
+import androidx.compose.ui.viewinterop.AndroidView
 import java.io.IOException
 
-class Main : AppCompatActivity() {
-
-    private lateinit var webView: WebView
+class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
-        webView = findViewById(R.id.webview_compontent)
-        configureWebView()
+        val result = findPrimeShebang("_\$1.html")
 
-        if (savedInstanceState == null) {
-            val targetFile = findTaggedHtml("_$1.html")
-            webView.loadUrl("file:///android_asset/$targetFile")
+        setContent {
+            WebViewScreen(result.first, result.second)
         }
     }
 
-    private fun configureWebView() {
-        val settings: WebSettings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
 
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+    private fun findPrimeShebang(tag: String): Pair<String, Boolean> {
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
-                if (url.startsWith("mailto:")) {
-                    startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse(url)))
-                    return true
+        val assetManager: AssetManager = assets
+
+        return try {
+
+            val files = assetManager.list("") ?: emptyArray()
+            val matches = files.filter { it.endsWith(tag) }
+
+            when (matches.size) {
+
+                1 -> Pair("file:///android_asset/${matches.first()}", false)
+
+                0 -> Pair(
+                    """
+                    <html>
+                    <body style="font-family:sans-serif;text-align:center;margin-top:40%">
+                    <h2>SimpleWV ERROR</h2>
+                    <p>NO PRIME SHEBANG DETECTED</p>
+                    <p>SimpleWV version - 2.0</p>
+                    </body>
+                    </html>
+                    """.trimIndent(),
+                    true
+                )
+
+                else -> Pair(
+                    """
+                    <html>
+                    <body style="font-family:sans-serif;text-align:center;margin-top:40%">
+                    <h2>SimpleWV ERROR</h2>
+                    <p>DUBLICATE PRIME SHEBANGS</p>
+                    <p>SimpleWV version - 2.0</p>
+                    </body>
+                    </html>
+                    """.trimIndent(),
+                    true
+                )
+            }
+
+        } catch (e: IOException) {
+            Pair("<html><body>SimpleWV ERROR</body></html>", true)
+        }
+    }
+}
+
+@Composable
+fun WebViewScreen(content: String, isHtml: Boolean) {
+
+    var webView: WebView? by remember { mutableStateOf(null) }
+
+    BackHandler(enabled = webView?.canGoBack() == true) {
+        webView?.goBack()
+    }
+
+    AndroidView(
+        factory = { context ->
+
+            WebView(context).apply {
+
+                webView = this
+
+                val settings = settings
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = true
+
+                CookieManager.getInstance()
+                    .setAcceptThirdPartyCookies(this, true)
+
+                webViewClient = object : WebViewClient() {
+
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): Boolean {
+
+                        val url = request?.url.toString()
+
+                        if (url.startsWith("mailto:")) {
+                            val intent = Intent(Intent.ACTION_SENDTO, Uri.parse(url))
+                            context.startActivity(intent)
+                            return true
+                        }
+
+                        return false
+                    }
                 }
-                return false
+
+                if (isHtml) {
+                    loadDataWithBaseURL(
+                        null,
+                        content,
+                        "text/html",
+                        "UTF-8",
+                        null
+                    )
+                } else {
+                    loadUrl(content)
+                }
             }
         }
-    }
-
-    /**
-     * Scans the assets folder for a filename containing the specified tag.
-     * Defaults to "index.html" if no match is found.
-     */
-    private fun findTaggedHtml(tag: String): String {
-        val assetManager: AssetManager = assets
-        return try {
-            val files = assetManager.list("")
-            files?.firstOrNull { it.endsWith(tag) } ?: "index.html"
-        } catch (e: IOException) {
-            e.printStackTrace()
-            "index.html"
-        }
-    }
-
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
-    }
+    )
 }
