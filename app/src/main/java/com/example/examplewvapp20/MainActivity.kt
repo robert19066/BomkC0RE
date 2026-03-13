@@ -1,9 +1,11 @@
+
 package com.example.examplewvapp20
 
 import android.content.Intent
 import android.content.res.AssetManager
 import android.net.Uri
 import android.os.Bundle
+import android.util.Base64
 import android.webkit.*
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -12,234 +14,199 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.IOException
 
-
-// ── Shebang resolution result ─────────────────────────────────────────────────
+// ── Fluid Resolution System ──────────────────────────────────────────────────
 
 sealed class ShebangResult {
-    /** A valid asset URL ready to pass to WebView.loadUrl() */
-    data class AssetUrl(val url: String) : ShebangResult()
+    data class AssetUrl(
+        val url: String, 
+        val isLegacy: Boolean, 
+        val warningsDisabled: Boolean
+    ) : ShebangResult()
 
-    /** Something went wrong — show the user an error page */
     data class Error(val code: ErrorCode, val detail: String? = null) : ShebangResult()
 }
 
-enum class ErrorCode(val code: String, val message: String) {
-    NO_PRIME_SHEBANG   ("001", "No entry-point found.\nMake sure your app was built correctly (missing _\$1 file)."),
-    DUPLICATE_SHEBANG  ("002", "Duplicate entry-points detected.\nOnly one file tagged _\$1 is allowed."),
-    ASSET_IO_ERROR     ("003", "Could not read app assets.\nThe app package may be corrupt."),
+enum class ErrorCode(val code: String, val title: String, val message: String) {
+    NO_PRIME_SHEBANG("001", "ENTRY POINT MISSING", "The engine searched the asset manifest but found no 'Fluid' ID or legacy shebang file."),
+    DUPLICATE_SHEBANG("002", "CONFLICT DETECTED", "Multiple entry-points were found. The engine cannot decide which file to ignite."),
+    ASSET_IO_ERROR("003", "FS READ FAILURE", "A critical I/O error occurred while scanning the application container."),
+    RENDER_CRASH("004", "WEBVIEW PANIC", "The internal rendering engine reported a fatal frame failure.")
 }
 
+// ── Asset Logic ──────────────────────────────────────────────────────────────
 
-// ── MainActivity ──────────────────────────────────────────────────────────────
-
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val result = resolveEntryPoint(assets)
-        setContent {
-            WebViewScreen(result)
-        }
-    }
-}
-
-
-// ── Asset resolution (pure function — easy to unit-test) ──────────────────────
-
-fun resolveEntryPoint(assetManager: AssetManager, tag: String = "_\$1.html"): ShebangResult {
-    val files = try {
-        assetManager.list("") ?: emptyArray()
+fun resolveEntryPoint(assetManager: AssetManager): ShebangResult {
+    val htmlFiles = try {
+        (assetManager.list("") ?: emptyArray()).filter { it.endsWith(".html") }
     } catch (e: IOException) {
         return ShebangResult.Error(ErrorCode.ASSET_IO_ERROR, e.message)
     }
 
-    val matches = files.filter { it.endsWith(tag) }
-    return when (matches.size) {
-        1    -> ShebangResult.AssetUrl("file:///android_asset/${matches.first()}")
-        0    -> ShebangResult.Error(ErrorCode.NO_PRIME_SHEBANG)
-        else -> ShebangResult.Error(ErrorCode.DUPLICATE_SHEBANG,
-                    "Found: ${matches.joinToString()}")
+    var fluidEntryPoint: String? = null
+    var legacyEntryPoint: String? = null
+    var warningsDisabled = false
+
+    // Fluid Scan: Look inside files for markers
+    for (fileName in htmlFiles) {
+        try {
+            val content = assetManager.open(fileName).bufferedReader().use { it.readText() }
+            
+            if (content.contains("id=\"disablewarnings\"")) {
+                warningsDisabled = true
+            }
+
+            // Look for <div class="id1">...</div>
+            if (content.contains("class=\"id1\"")) {
+                fluidEntryPoint = fileName
+            }
+        } catch (e: Exception) { continue }
+
+        // Legacy check: filename-based
+        if (fileName.contains("_$1.html")) {
+            legacyEntryPoint = fileName
+        }
+    }
+
+    return when {
+        fluidEntryPoint != null -> 
+            ShebangResult.AssetUrl("file:///android_asset/$fluidEntryPoint", false, warningsDisabled)
+        legacyEntryPoint != null -> 
+            ShebangResult.AssetUrl("file:///android_asset/$legacyEntryPoint", true, warningsDisabled)
+        else -> 
+            ShebangResult.Error(ErrorCode.NO_PRIME_SHEBANG)
     }
 }
 
-
-// ── Error page (generated once, not scattered through business logic) ─────────
-
-private const val SIMPLEWV_VERSION = "2.0"
+// ── Beautiful Error Page UI ──────────────────────────────────────────────────
 
 fun buildErrorPage(code: ErrorCode, detail: String? = null): String {
-    val detailBlock = if (detail != null)
-        """<p class="detail">$detail</p>"""
-    else ""
-
     // language=HTML
     return """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8"/>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-          <title>SimpleWV Error</title>
-          <style>
-            *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-            body {
-              min-height: 100vh;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              font-family: system-ui, sans-serif;
-              background: #0f0f0f;
-              color: #e8e8e8;
-              padding: 24px;
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+        <style>
+            :root { --bg: #050505; --accent: #ff3b3b; --surface: #111; --text: #eee; }
+            body { 
+                background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif;
+                margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh;
+                overflow: hidden;
             }
-            .card {
-              background: #1a1a1a;
-              border: 1px solid #2e2e2e;
-              border-radius: 16px;
-              padding: 36px 32px;
-              max-width: 400px;
-              width: 100%;
-              text-align: center;
+            .container {
+                width: 85%; max-width: 400px; padding: 40px 20px;
+                background: linear-gradient(145deg, #161616, #0c0c0c);
+                border: 1px solid #222; border-radius: 24px; text-align: center;
+                box-shadow: 0 30px 60px rgba(0,0,0,0.5);
+                animation: slideUp 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
             }
-            .badge {
-              display: inline-block;
-              background: #ff3b3b22;
-              color: #ff6b6b;
-              border: 1px solid #ff3b3b55;
-              border-radius: 8px;
-              font-size: 11px;
-              font-weight: 700;
-              letter-spacing: .08em;
-              padding: 4px 10px;
-              margin-bottom: 20px;
-              text-transform: uppercase;
+            @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+            .icon { 
+                font-size: 48px; margin-bottom: 20px; color: var(--accent);
+                text-shadow: 0 0 20px rgba(255,59,59,0.3);
             }
-            h1 {
-              font-size: 18px;
-              font-weight: 600;
-              margin-bottom: 10px;
-              color: #fff;
+            .code-badge {
+                display: inline-block; padding: 4px 12px; background: rgba(255,59,59,0.1);
+                color: var(--accent); border: 1px solid rgba(255,59,59,0.3);
+                border-radius: 100px; font-size: 10px; font-weight: 800; letter-spacing: 1px; margin-bottom: 16px;
             }
-            .message {
-              font-size: 14px;
-              color: #aaa;
-              line-height: 1.6;
-              white-space: pre-line;
+            h1 { font-size: 22px; font-weight: 700; margin: 0 0 12px 0; letter-spacing: -0.5px; }
+            p { font-size: 14px; color: #888; line-height: 1.6; margin-bottom: 24px; }
+            .detail-box {
+                background: #000; padding: 12px; border-radius: 12px; 
+                font-family: monospace; font-size: 11px; color: #555;
+                text-align: left; word-break: break-all; border: 1px solid #1a1a1a;
             }
-            .detail {
-              margin-top: 16px;
-              font-size: 12px;
-              color: #666;
-              font-family: monospace;
-              background: #111;
-              border-radius: 8px;
-              padding: 10px 12px;
-              text-align: left;
-              word-break: break-all;
-            }
-            .footer {
-              margin-top: 28px;
-              font-size: 11px;
-              color: #444;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="badge">Error ${code.code}</div>
-            <h1>${code.message.lines().first()}</h1>
-            <p class="message">${code.message.lines().drop(1).joinToString("\n")}</p>
-            $detailBlock
-            <div class="footer">SimpleWV $SIMPLEWV_VERSION</div>
-          </div>
-        </body>
-        </html>
+            .glitch-footer { margin-top: 30px; font-size: 10px; color: #333; font-weight: 600; letter-spacing: 2px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="icon">⚠</div>
+            <div class="code-badge">CORE ERROR ${code.code}</div>
+            <h1>${code.title}</h1>
+            <p>${code.message}</p>
+            ${if (detail != null) "<div class='detail-box'>$detail</div>" else ""}
+            <div class="glitch-footer">B0MK CORE // FLUID_MODE</div>
+        </div>
+    </body>
+    </html>
     """.trimIndent()
 }
 
-
-// ── WebView composable ────────────────────────────────────────────────────────
+// ── WebView Implementation ────────────────────────────────────────────────────
 
 @Composable
 fun WebViewScreen(result: ShebangResult) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     var canGoBack by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = canGoBack) {
-        webView?.goBack()
-    }
+    BackHandler(enabled = canGoBack) { webView?.goBack() }
 
     AndroidView(
         factory = { context ->
             WebView(context).apply {
                 webView = this
-
                 with(settings) {
-                    javaScriptEnabled  = true
-                    domStorageEnabled  = true
-                    allowFileAccess    = true
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    allowFileAccess = true
                 }
-
-                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         canGoBack = view?.canGoBack() == true
-                    }
-
-                    override fun shouldOverrideUrlLoading(
-                        view: WebView?,
-                        request: WebResourceRequest?,
-                    ): Boolean {
-                        val url = request?.url?.toString() ?: return false
-                        if (url.startsWith("mailto:")) {
-                            context.startActivity(
-                                Intent(Intent.ACTION_SENDTO, Uri.parse(url))
-                            )
-                            return true
+                        
+                        // Handle Warnings Injection
+                        if (result is ShebangResult.AssetUrl && !result.warningsDisabled) {
+                            if (result.isLegacy) {
+                                val warningJs = """
+                                    (function() {
+                                        var warn = document.createElement('div');
+                                        warn.style.position = 'fixed';
+                                        warn.style.bottom = '10px';
+                                        warn.style.left = '10px';
+                                        warn.style.right = '10px';
+                                        warn.style.background = '#ffeb3b';
+                                        warn.style.color = '#000';
+                                        warn.style.padding = '12px';
+                                        warn.style.fontSize = '12px';
+                                        warn.style.fontWeight = 'bold';
+                                        warn.style.borderRadius = '8px';
+                                        warn.style.zIndex = '999999';
+                                        warn.style.border = '2px solid #000';
+                                        warn.innerText = 'B0MK CORE WARNING - OUTDATED NAMING SCHEME, PLEASE CHANGE TO THE "Fluid" NAMING SCHEME.';
+                                        document.body.appendChild(warn);
+                                        console.warn('B0MK CORE: Outdated naming scheme detected.');
+                                    })();
+                                """.trimIndent()
+                                view?.evaluateJavascript(warningJs, null)
+                            }
                         }
-                        return false
                     }
 
-                    override fun onReceivedError(
-                        view: WebView?,
-                        request: WebResourceRequest?,
-                        error: WebResourceError?,
-                    ) {
-                        // Only show an error page for the main frame, not sub-resources
-                        if (request?.isForMainFrame != true) return
-                        val desc = error?.description?.toString() ?: "unknown error"
-                        val code = error?.errorCode ?: -1
-                        val html = buildErrorPage(
-                            ErrorCode.ASSET_IO_ERROR,
-                            "WebView error $code: $desc"
-                        )
-                        view?.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-                    }
-
-                    override fun onReceivedHttpError(
-                        view: WebView?,
-                        request: WebResourceRequest?,
-                        errorResponse: WebResourceResponse?,
-                    ) {
-                        if (request?.isForMainFrame != true) return
-                        val status = errorResponse?.statusCode ?: 0
-                        val html = buildErrorPage(
-                            ErrorCode.ASSET_IO_ERROR,
-                            "HTTP error $status"
-                        )
+                    override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) {
+                        if (req?.isForMainFrame != true) return
+                        val html = buildErrorPage(ErrorCode.ASSET_IO_ERROR, err?.description?.toString())
                         view?.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
                     }
                 }
 
                 when (result) {
                     is ShebangResult.AssetUrl -> loadUrl(result.url)
-                    is ShebangResult.Error    -> loadDataWithBaseURL(
-                        null,
-                        buildErrorPage(result.code, result.detail),
-                        "text/html", "UTF-8", null
-                    )
+                    is ShebangResult.Error -> {
+                        val html = buildErrorPage(result.code, result.detail)
+                        loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                    }
                 }
             }
         }
     )
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val result = resolveEntryPoint(assets)
+        setContent { WebViewScreen(result) }
+    }
 }
